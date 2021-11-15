@@ -1,0 +1,127 @@
+#!/usr/bin/python3
+
+"""
+Summarizing Agent.
+
+Usage:
+  summarize text [options] [<blob>]
+  summarize file [options] [<path>]
+  summarize lang list
+  summarize init
+  summarize (-h | --help)
+  summarize --version
+
+Options:
+  -L <lang>, --lang <lang>   Source language. [default: en]
+  -s <size>, --size <size>   Summary size.    [default: 80]
+  -h --help    Show this screen.
+  --version    Show version.
+"""
+
+# This script performs offline summaries using Huggingface transformers.
+# Default model is https://huggingface.co/csebuetnlp/mT5_multilingual_XLSum
+# Works best in English, reducing a paragraph to a sentence, but also supports
+# a wide range of other languages and parameters. Check it out !
+
+__author__ = "Richard Jarry"
+__version__ = "0.0.1"
+
+import sys, re, logging, json
+import huggingface_hub as hu
+from docopt import docopt
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+
+MODEL_NAME = "csebuetnlp/mT5_multilingual_XLSum"
+
+LANGUAGE_DICT = "./ISO-639-1.json"
+
+WHITESPACE_HANDLER = lambda k: re.sub('\s+', ' ', re.sub('\n+', ' ', k.strip()))
+
+def summarize(input_text:str,output_length:int) -> str:
+    try:
+      # Initialize the tokenizer and the model
+      logging.disable(logging.ERROR)
+      tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME,local_files_only=True)
+      model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME,local_files_only=True)
+
+    except OSError: 
+      print(f'Error while loading model "{MODEL_NAME}".')
+      print("Has it been correctly downloaded beforehand?")
+      print("Try typing ./summarize init")
+      sys.exit()
+
+    input_ids = tokenizer(
+        [WHITESPACE_HANDLER(input_text)],
+        return_tensors="pt",
+        padding="max_length",
+        truncation=True,
+        max_length=output_length
+    )["input_ids"]
+
+    output_ids = model.generate(
+        input_ids=input_ids,
+        max_length=output_length,
+        no_repeat_ngram_size=2,
+        num_beams=4
+    )[0]
+
+    summary = tokenizer.decode(
+        output_ids,
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False
+    )
+
+    return summary
+
+def summarize_file(input_path:str,output_length:int) -> str:
+    text = open(input_path,'r').read()
+    return summarize(text,output_length)
+
+def init():
+    try:
+      logging.disable(logging.ERROR)
+      _ = AutoTokenizer.from_pretrained(MODEL_NAME,force_download=True)
+      _ = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME,force_download=True)
+
+    except ValueError or OSError:
+      print(f'Error while fetching model "{MODEL_NAME}".')
+      print("Please check its availability on the Huggingface Hub.")
+      sys.exit()
+
+if __name__ == '__main__':
+
+    args = docopt(__doc__, version=__version__)
+
+    lang = args['--lang']
+    size = args['--size']
+    blob = args['<blob>']
+    path = args['<path>']
+
+    langs = json.load(open(LANGUAGE_DICT))
+    tags = hu.model_info(MODEL_NAME).tags
+
+    # LANG_LIST is supported languages in ISO-639-1 format
+    # LANGUAGES is supported languages in plain lowercase english
+    LANG_LIST = [tag.lower() for tag in tags if len(tag) == 2]
+    LANGUAGES = [d['name'].lower() for d in langs if d['code'] in LANG_LIST]
+
+    if lang and lang.lower() not in LANG_LIST + LANGUAGES:
+        print("Unrecognized or unsupported language. Exiting.")
+        sys.exit()
+
+    if args['text']:
+        lines = [line for line in sys.stdin] if not blob else [blob]
+        result = summarize(' '.join(lines),int(size))
+        print(result)
+
+    if args['file']:
+        line = sys.stdin.readline() if not path else path
+        result = summarize_file(path,int(size))
+        print(result)
+
+    if args['lang'] and args['list']:
+        for lang in LANGUAGES:
+            print(lang)
+
+    if args['init']:
+        init()
